@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "salted.silence",
+  "name": "Silence",
+  "version": "1.0.0",
+  "author": "salted-sorbet",
+  "description": "Per-workspace mute switches and volume sliders for Omarchy",
+  "kinds": ["bar-widget", "service"],
+  "entryPoints": {
+    "barWidget": "Widget.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Silence (workspace audio)",
+    "description": "Mute/volume controls per Hyprland workspace, with optional background auto-mute",
+    "category": "Audio",
+    "allowMultiple": false
+  }
+}
