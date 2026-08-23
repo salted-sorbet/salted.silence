@@ -6,6 +6,8 @@ Silence adds a bar widget that gives every Hyprland workspace its own mute
 switch and volume slider, plus an optional auto-mute mode that silences
 whatever is playing on workspaces you are not looking at.
 
+![preview](preview.png)
+
 ## Features
 
 - One panel row per workspace: name, mute switch, volume slider
