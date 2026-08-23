@@ -81,11 +81,20 @@ Panel {
   }
 
   // ---------- writing ----------
+  // The payload is base64-encoded before it ever reaches a shell, so no
+  // workspace name or value can break out of quoting. Written to a temp file
+  // and moved into place so the daemon never sees a partial write.
   function writeFile(payload) {
-    var escaped = JSON.stringify(payload).replace(/'/g, "'\\''")
+    var json = JSON.stringify(payload).replace(/[\u0080-\uFFFF]/g, function(ch) {
+      var h = ch.charCodeAt(0).toString(16)
+      while (h.length < 4) h = "0" + h
+      return "\\u" + h
+    })
+    var b64 = Qt.btoa(json)
     Quickshell.execDetached(["bash", "-c",
-      "mkdir -p '" + root.runtimeDir + "' && printf '%s' '" + escaped +
-      "' > '" + root.statePath + "'"])
+      "mkdir -p '" + root.runtimeDir + "' && printf %s '" + b64 +
+      "' | base64 -d > '" + root.statePath + ".tmp' && mv -f '" +
+      root.statePath + ".tmp' '" + root.statePath + "'"])
   }
 
   // Merge the desired overlay over known file state and persist everything.

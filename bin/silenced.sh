@@ -62,6 +62,9 @@ sync_audio() {
     auto_mute=$(jq -r 'if has("autoMute") and .autoMute != null then .autoMute else true end' "$STATE_FILE" 2>/dev/null) || return
     ws_states=$(jq -c '.workspaces // {}' "$STATE_FILE" 2>/dev/null) || return
     exclude=$(jq -r 'if has("exclude") then .exclude else "" end' "$STATE_FILE" 2>/dev/null) || return
+    # The regex is user-editable state: strip control characters and cap it.
+    exclude=${exclude//[![:print:]]/}
+    ((${#exclude} <= 256)) || { log "exclude too long, ignored"; exclude=""; }
 
     log "sync autoMute=$auto_mute ws_states=$ws_states"
 
@@ -91,6 +94,8 @@ sync_audio() {
     local idx spid appname curvol ws ws_state muted vol target
     while IFS='|' read -r idx spid appname curvol; do
         [[ -n "$idx" ]] || continue
+        # Only touch well-formed stream indexes and pids.
+        [[ "$idx" =~ ^[0-9]+$ && "$spid" =~ ^[0-9]+$ ]] || continue
         if [[ -n "$exclude" && "$appname" =~ $exclude ]]; then
             log "stream#$idx $appname: excluded, skip"
             continue
@@ -110,8 +115,9 @@ sync_audio() {
             log "stream#$idx $appname ws=$ws explicit muted=$muted vol=$vol"
             pactl set-sink-input-mute "$idx" "$([[ $muted == "true" ]] && echo 1 || echo 0)"
 
-            if [[ -n "$vol" ]]; then
-                [[ -z "${ORIG_VOL[$idx]:-}" ]] && ORIG_VOL[$idx]="${curvol:-100}"
+            if [[ "$vol" =~ ^[0-9]+$ ]]; then
+                (( vol > 150 )) && vol=150
+                [[ -z "${ORIG_VOL[$idx]:-}" ]] && ORIG_VOL[$idx]="$([[ $curvol =~ ^[0-9]+$ ]] && echo "$curvol" || echo 100)"
                 pactl set-sink-input-volume "$idx" "${vol}%"
             elif [[ -n "${ORIG_VOL[$idx]:-}" ]]; then
                 pactl set-sink-input-volume "$idx" "${ORIG_VOL[$idx]}%"
