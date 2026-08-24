@@ -46,7 +46,20 @@ if [[ -L $STATE_FILE ]]; then
 fi
 [[ -f $STATE_FILE ]] || printf '{"autoMute":true,"workspaces":{}}\n' > "$STATE_FILE"
 
-exec 9>"$STATE_DIR/daemon.lock"
+# Lock file: create without clobbering or following an existing entry, then
+# verify it is a plain regular file owned by us before binding the lock fd.
+# Reopening uses read/write mode (no truncation) on the verified path.
+LOCK="$STATE_DIR/daemon.lock"
+if [[ -L $LOCK || (-e $LOCK && ! -f $LOCK) ]]; then
+    echo "silenced: refusing unsafe lock file" >&2
+    exit 1
+fi
+( set -o noclobber; : > "$LOCK" ) 2>/dev/null
+if [[ -L $LOCK || ! -f $LOCK ]] || [[ $(stat -c '%u' -- "$LOCK") != "$(id -u)" ]]; then
+    echo "silenced: lock file failed verification" >&2
+    exit 1
+fi
+exec 9<>"$LOCK" || exit 1
 flock -n 9 || exit 0
 
 declare -A ORIG_VOL=()
@@ -78,6 +91,14 @@ tree_of() {
 
 sync_audio() {
     local auto_mute ws_states exclude focused allowed
+    # Only read a plain, non-symlink file owned by us, and cap its size so a
+    # replaced state entry cannot exhaust or stall the daemon.
+    [[ -f $STATE_FILE && ! -L $STATE_FILE ]] || return
+    local sz
+    sz=$(stat -c '%u:%s' -- "$STATE_FILE" 2>/dev/null) || return
+    [[ $sz == "$(id -u):"* ]] || { log "state file not owned by us, skipped"; return; }
+    sz=${sz#*:}
+    (( sz <= 65536 )) || { log "state file too large (${sz} bytes), skipped"; return; }
     # jq's "//" alternative falls through on false, so booleans must be read
     # with has() to tell an explicit false from an absent key.
     auto_mute=$(jq -r 'if has("autoMute") and .autoMute != null then .autoMute else true end' "$STATE_FILE" 2>/dev/null) || return
@@ -161,7 +182,7 @@ sync_audio() {
     done < "$TMPDIR_S/streams"
 }
 
-mtime_now() { stat -Lc '%y' -- "$STATE_FILE" 2>/dev/null; }
+mtime_now() { stat -c '%y' -- "$STATE_FILE" 2>/dev/null; }
 
 last_mtime=$(mtime_now)
 sync_audio

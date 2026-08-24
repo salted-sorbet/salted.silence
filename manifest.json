@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "salted.silence",
   "name": "Silence",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "salted-sorbet",
   "description": "Per-workspace mute switches and volume sliders for Omarchy",
   "kinds": ["bar-widget", "service"],
