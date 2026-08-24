@@ -27,16 +27,37 @@ STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/daemon.log"
 SOCK="${XDG_RUNTIME_DIR}/hypr/${HYPRLAND_INSTANCE_SIGNATURE}/.socket2.sock"
 
-mkdir -p "$STATE_DIR"
+# Fail closed if the runtime dir or state dir exists but was not created by
+# this user (pre-planted by another local user).
+for d in "${XDG_RUNTIME_DIR}" "$STATE_DIR"; do
+    if [[ -e $d ]] && [[ $(stat -c '%u' -- "$d") != "$(id -u)" ]]; then
+        echo "silenced: refusing unsafe directory: $d" >&2
+        exit 1
+    fi
+done
+
+mkdir -p -m 700 "$STATE_DIR" || exit 1
+chmod 700 -- "$STATE_DIR"
+
+# Refuse to follow a symlinked state file planted over the real path.
+if [[ -L $STATE_FILE ]]; then
+    echo "silenced: refusing symlinked state file" >&2
+    exit 1
+fi
 [[ -f $STATE_FILE ]] || printf '{"autoMute":true,"workspaces":{}}\n' > "$STATE_FILE"
 
 exec 9>"$STATE_DIR/daemon.lock"
 flock -n 9 || exit 0
 
 declare -A ORIG_VOL=()
-TMPDIR_S="${TMPDIR:-/tmp}/silence.$$"
-mkdir -p "$TMPDIR_S"
-trap 'rm -rf "$TMPDIR_S"' EXIT
+# Private work directory: mktemp guarantees a fresh, owner-only, non-guessable
+# path inside the user-private runtime dir; failure is fatal.
+if ! TMPDIR_S=$(mktemp -d "$STATE_DIR/work.XXXXXXXX"); then
+    echo "silenced: cannot create private work directory" >&2
+    exit 1
+fi
+chmod 700 -- "$TMPDIR_S"
+trap 'rm -rf -- "$TMPDIR_S"' EXIT
 
 log() { [[ -n "${SILENCE_DEBUG:-}" ]] && echo "$(date +%H:%M:%S.%3N) $*" >> "$LOG_FILE"; return 0; }
 
