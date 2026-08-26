@@ -89,21 +89,35 @@ tree_of() {
         }'
 }
 
+# Open state.json once, validate what we actually opened via fstat on
+# /proc/self/fd, and return the bounded bytes. All subsequent parsing uses
+# this captured string so there is no second pathname lookup.
+read_state() {
+    STATE_JSON=""
+    local fd owner sz
+    exec {fd}<"$STATE_FILE" 2>/dev/null || return 1
+    # Validate the open descriptor — not the path — via /proc/self/fd.
+    owner=$(stat -c '%u' "/proc/self/fd/$fd" 2>/dev/null) || { exec {fd}<&-; return 1; }
+    [[ $owner == "$(id -u)" ]]                          || { exec {fd}<&-; return 1; }
+    [[ $(stat -c '%F' "/proc/self/fd/$fd" 2>/dev/null) == "regular file" ]] \
+                                                        || { exec {fd}<&-; return 1; }
+    sz=$(stat -c '%s' "/proc/self/fd/$fd" 2>/dev/null)  || { exec {fd}<&-; return 1; }
+    (( sz <= 65536 ))                                   || { exec {fd}<&-; return 1; }
+    # Read the exact number of bytes so a growing/truncated file cannot stall us.
+    STATE_JSON=$(dd bs=1 count="$sz" <&"$fd" 2>/dev/null)
+    exec {fd}<&-
+    [[ -n $STATE_JSON ]]
+}
+
 sync_audio() {
     local auto_mute ws_states exclude focused allowed
-    # Only read a plain, non-symlink file owned by us, and cap its size so a
-    # replaced state entry cannot exhaust or stall the daemon.
-    [[ -f $STATE_FILE && ! -L $STATE_FILE ]] || return
-    local sz
-    sz=$(stat -c '%u:%s' -- "$STATE_FILE" 2>/dev/null) || return
-    [[ $sz == "$(id -u):"* ]] || { log "state file not owned by us, skipped"; return; }
-    sz=${sz#*:}
-    (( sz <= 65536 )) || { log "state file too large (${sz} bytes), skipped"; return; }
+    # One descriptor-bound read, validated and bounded in read_state().
+    read_state || { log "state file read failed, skipped"; return; }
     # jq's "//" alternative falls through on false, so booleans must be read
     # with has() to tell an explicit false from an absent key.
-    auto_mute=$(jq -r 'if has("autoMute") and .autoMute != null then .autoMute else true end' "$STATE_FILE" 2>/dev/null) || return
-    ws_states=$(jq -c '.workspaces // {}' "$STATE_FILE" 2>/dev/null) || return
-    exclude=$(jq -r 'if has("exclude") then .exclude else "" end' "$STATE_FILE" 2>/dev/null) || return
+    auto_mute=$(jq -r 'if has("autoMute") and .autoMute != null then .autoMute else true end' <<<"$STATE_JSON" 2>/dev/null) || return
+    ws_states=$(jq -c '.workspaces // {}' <<<"$STATE_JSON" 2>/dev/null) || return
+    exclude=$(jq -r 'if has("exclude") then .exclude else "" end' <<<"$STATE_JSON" 2>/dev/null) || return
     # The regex is user-editable state: strip control characters and cap it.
     exclude=${exclude//[![:print:]]/}
     ((${#exclude} <= 256)) || { log "exclude too long, ignored"; exclude=""; }
