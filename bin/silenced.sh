@@ -89,24 +89,40 @@ tree_of() {
         }'
 }
 
-# Open state.json once, validate what we actually opened via fstat on
-# /proc/self/fd, and return the bounded bytes. All subsequent parsing uses
-# this captured string so there is no second pathname lookup.
+# Open state.json once and return the bounded bytes in STATE_JSON. The open
+# itself uses O_NOFOLLOW|O_NONBLOCK so a planted symlink or FIFO can never
+# be followed or block us; the owner, type, and size checks run against the
+# very same descriptor (fstat), and parsing stays on the captured string.
 read_state() {
     STATE_JSON=""
-    local fd owner sz
-    exec {fd}<"$STATE_FILE" 2>/dev/null || return 1
-    # Validate the open descriptor — not the path — via /proc/self/fd.
-    owner=$(stat -c '%u' "/proc/self/fd/$fd" 2>/dev/null) || { exec {fd}<&-; return 1; }
-    [[ $owner == "$(id -u)" ]]                          || { exec {fd}<&-; return 1; }
-    [[ $(stat -c '%F' "/proc/self/fd/$fd" 2>/dev/null) == "regular file" ]] \
-                                                        || { exec {fd}<&-; return 1; }
-    sz=$(stat -c '%s' "/proc/self/fd/$fd" 2>/dev/null)  || { exec {fd}<&-; return 1; }
-    (( sz <= 65536 ))                                   || { exec {fd}<&-; return 1; }
-    # Read the exact number of bytes so a growing/truncated file cannot stall us.
-    STATE_JSON=$(dd bs=1 count="$sz" <&"$fd" 2>/dev/null)
-    exec {fd}<&-
-    [[ -n $STATE_JSON ]]
+    local out rc
+    out=$(python3 - "$STATE_FILE" <<'PY'
+import os, stat, sys
+path = sys.argv[1]
+flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+try:
+    fd = os.open(path, flags)
+except OSError:
+    sys.exit(2)
+try:
+    st = os.fstat(fd)
+    if st.st_uid != os.getuid():
+        sys.exit(3)
+    if not stat.S_ISREG(st.st_mode):
+        sys.exit(4)
+    if st.st_size > 65536:
+        sys.exit(5)
+    data = os.read(fd, st.st_size + 1)
+finally:
+    os.close(fd)
+if not data or len(data) != st.st_size:
+    sys.exit(6)
+sys.stdout.write(data.decode("utf-8", "replace"))
+PY
+)
+    rc=$?
+    (( rc == 0 )) || return 1
+    STATE_JSON=$out
 }
 
 sync_audio() {

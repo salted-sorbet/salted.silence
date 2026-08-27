@@ -91,10 +91,11 @@ Panel {
       return "\\u" + h
     })
     var b64 = Qt.btoa(json)
+    // Random temp name (mktemp) so a planted symlink at a predictable path
+    // can never be truncated; mv -f replaces, never follows, the target link.
     Quickshell.execDetached(["bash", "-c",
-      "mkdir -p '" + root.runtimeDir + "' && printf %s '" + b64 +
-      "' | base64 -d > '" + root.statePath + ".tmp' && mv -f '" +
-      root.statePath + ".tmp' '" + root.statePath + "'"])
+      "mkdir -p -m 700 '" + root.runtimeDir + "' && tmp=$(mktemp '" + root.runtimeDir + "/.tmp.XXXXXXXX') && printf %s '" + b64 +
+      "' | base64 -d > \"$tmp\" && mv -f -- \"$tmp\" '" + root.statePath + "'"])
   }
 
   // Merge the desired overlay over known file state and persist everything.
