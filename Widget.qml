@@ -36,20 +36,29 @@ Panel {
   readonly property string ff: bar ? bar.fontFamily : "sans-serif"
 
   // ---------- reading ----------
+  // Content always arrives through the shared descriptor-safe helper
+  // (bin/read-state.py: O_NOFOLLOW|O_NONBLOCK open, fstat-validated, bounded
+  // 64 KiB). A plain cat/FileView could block or exhaust the shell on a
+  // planted FIFO or oversized replacement, so neither is used.
+  readonly property string readState: Qt.resolvedUrl("bin/read-state.py").toString().replace(/^file:\/\//, "")
+  readonly property string writeState: Qt.resolvedUrl("bin/write-state.py").toString().replace(/^file:\/\//, "")
+
   Process {
     id: reader
-    command: ["cat", root.statePath]
+    command: ["python3", root.readState, root.statePath]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyState(text)
     }
   }
 
-  FileView {
-    path: root.statePath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: if (!reader.running) reader.running = true
+  // Cheap change detection: re-read at most every 1.5 s. Bounded reads exit
+  // immediately whatever sits at the path, so this cannot hang or balloon.
+  Timer {
+    interval: 1500
+    running: true
+    repeat: true
+    onTriggered: if (!reader.running) reader.running = true
   }
 
   function applyState(text) {
@@ -81,21 +90,21 @@ Panel {
   }
 
   // ---------- writing ----------
-  // The payload is base64-encoded before it ever reaches a shell, so no
-  // workspace name or value can break out of quoting. Written to a temp file
-  // and moved into place so the daemon never sees a partial write.
+  // Payload is base64-encoded so no workspace name or value can carry shell
+  // or argument semantics, then handed to the shared helper which writes the
+  // exclusive temp inode in one open and atomically renames it into place.
+  Process { id: writer }
+
   function writeFile(payload) {
     var json = JSON.stringify(payload).replace(/[\u0080-\uFFFF]/g, function(ch) {
       var h = ch.charCodeAt(0).toString(16)
       while (h.length < 4) h = "0" + h
       return "\\u" + h
     })
-    var b64 = Qt.btoa(json)
-    // Random temp name (mktemp) so a planted symlink at a predictable path
-    // can never be truncated; mv -f replaces, never follows, the target link.
-    Quickshell.execDetached(["bash", "-c",
-      "mkdir -p -m 700 '" + root.runtimeDir + "' && tmp=$(mktemp '" + root.runtimeDir + "/.tmp.XXXXXXXX') && printf %s '" + b64 +
-      "' | base64 -d > \"$tmp\" && mv -f -- \"$tmp\" '" + root.statePath + "'"])
+    writer.command = ["bash", "-c",
+      "mkdir -p -m 700 '" + root.runtimeDir + "' && exec python3 '" + root.writeState +
+      "' \"$1\" '" + root.statePath + "'", "sh", Qt.btoa(json)]
+    writer.running = true
   }
 
   // Merge the desired overlay over known file state and persist everything.

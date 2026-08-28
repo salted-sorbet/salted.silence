@@ -89,37 +89,16 @@ tree_of() {
         }'
 }
 
-# Open state.json once and return the bounded bytes in STATE_JSON. The open
-# itself uses O_NOFOLLOW|O_NONBLOCK so a planted symlink or FIFO can never
-# be followed or block us; the owner, type, and size checks run against the
-# very same descriptor (fstat), and parsing stays on the captured string.
+# Open state.json once and return the bounded bytes in STATE_JSON. Delegates
+# to the shared descriptor-safe helper (O_NOFOLLOW|O_NONBLOCK open, fstat
+# validation, 64 KiB exact-byte read) so the daemon and the widget pass the
+# same audited path; parsing stays on the captured string.
+READ_STATE="$(cd "$(dirname "$0")" && pwd)/read-state.py"
+
 read_state() {
     STATE_JSON=""
     local out rc
-    out=$(python3 - "$STATE_FILE" <<'PY'
-import os, stat, sys
-path = sys.argv[1]
-flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-try:
-    fd = os.open(path, flags)
-except OSError:
-    sys.exit(2)
-try:
-    st = os.fstat(fd)
-    if st.st_uid != os.getuid():
-        sys.exit(3)
-    if not stat.S_ISREG(st.st_mode):
-        sys.exit(4)
-    if st.st_size > 65536:
-        sys.exit(5)
-    data = os.read(fd, st.st_size + 1)
-finally:
-    os.close(fd)
-if not data or len(data) != st.st_size:
-    sys.exit(6)
-sys.stdout.write(data.decode("utf-8", "replace"))
-PY
-)
+    out=$(python3 "$READ_STATE" "$STATE_FILE" 2>/dev/null)
     rc=$?
     (( rc == 0 )) || return 1
     STATE_JSON=$out
